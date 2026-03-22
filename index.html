@@ -34,11 +34,11 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--cyan);outline-o
 .nback{font-size:.7rem;color:var(--txt2);text-decoration:none;padding:.26rem .55rem;border:1px solid var(--b1);border-radius:6px;transition:.16s}
 .nback:hover{color:var(--cyan);border-color:var(--cyan)}
 @media(max-width:320px){.nbadge{display:none}}
-.main{position:relative;z-index:1;flex:1;display:flex;flex-direction:column;align-items:center;padding:.5rem .5rem 0;padding-bottom:calc(var(--tabH)+.5rem+env(safe-area-inset-bottom,0px))}
+.main{position:relative;z-index:1;flex:1;display:flex;flex-direction:column;align-items:center;padding:.3rem .5rem 0;padding-bottom:calc(var(--tabH)+.3rem+env(safe-area-inset-bottom,0px))}
 .board-col{width:100%;display:flex;flex-direction:column;align-items:center;gap:.5rem}
-.gh{text-align:center;margin-bottom:.4rem}
-.gt{font-family:var(--fh);font-size:clamp(1.2rem,3vw,2.2rem);font-weight:900;letter-spacing:.08em;background:linear-gradient(135deg,var(--cyan),var(--pur2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.stbar{display:flex;align-items:center;justify-content:space-between;width:100%;max-width:calc(var(--sq)*8 + 32px);margin-bottom:.4rem;gap:.5rem}
+.gh{text-align:center;margin-bottom:.25rem}
+.gt{font-family:var(--fh);font-size:clamp(.9rem,2.5vw,1.8rem);font-weight:900;letter-spacing:.08em;background:linear-gradient(135deg,var(--cyan),var(--pur2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.stbar{display:flex;align-items:center;justify-content:space-between;width:100%;max-width:calc(var(--sq)*8 + 32px);margin-bottom:.3rem;gap:.5rem}
 .sp{flex:1;padding:.4rem .55rem;border-radius:9px;background:var(--panel);border:1px solid var(--b1);transition:all .22s;min-width:0}
 .sp.act{border-color:var(--grn);box-shadow:0 0 12px rgba(0,255,136,.18);background:var(--grnd)}
 .sp.chk{border-color:var(--pink)!important;box-shadow:0 0 14px rgba(255,45,110,.3)!important;background:rgba(255,45,110,.07)!important}
@@ -412,9 +412,27 @@ document.addEventListener('touchend',e=>{if(curD&&e.changedTouches[0].clientY-ts
 // ── Square size ──
 function setSq(){
   const W=innerWidth,H=innerHeight;
-  const availW=W-32-14;
-  const availH=H-48-60-84-24;
-  let sq=Math.min(Math.floor(availW/8),Math.floor(availH/8));
+
+  // Measure real heights of fixed chrome elements
+  const nav=document.querySelector('.nav');
+  const stbar=document.getElementById('stbar');
+  const gh=document.querySelector('.gh');
+  const tabbar=document.querySelector('.tabbar');
+
+  const navH=nav?nav.offsetHeight:48;
+  const tabH=tabbar?tabbar.offsetHeight:60;
+
+  // stbar + title + gaps + board border(4px) + coords(14px) + main padding(8px top)
+  const stbarH=stbar?stbar.offsetHeight:84;
+  const titleH=gh?gh.offsetHeight:0;
+  const overhead=navH+tabH+stbarH+titleH+14+4+20; // coords+border+padding+gaps
+
+  // Available space for the board itself (8 squares)
+  const availW=W-32-14;          // horizontal: padding(16*2) + coords(14)
+  const availH=H-overhead;
+
+  // Extra 4px safety margin prevents subpixel overflow on any screen
+  let sq=Math.min(Math.floor((availW-4)/8),Math.floor((availH-4)/8));
   sq=Math.max(Math.min(sq,96),30);
   document.documentElement.style.setProperty('--sq',sq+'px');
 }
@@ -1672,6 +1690,8 @@ function toggleMute(){
 updateCoords();
 newGame();          // initialize board state FIRST
 buildThemes();setBT('classic');  // then apply theme (calls renderBoard safely)
+// Re-run setSq after DOM is fully laid out so stbar/title heights are measured
+requestAnimationFrame(()=>requestAnimationFrame(()=>{setSq();renderBoard()}));
 </script>
 </body>
 </html>
