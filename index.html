@@ -1263,7 +1263,12 @@ function genCode(){return Math.random().toString(36).slice(2,8).toUpperCase()}
 function serBoard(){return board.flat().map(v=>v||'')}
 function deserBoard(flat){board=Array.from({length:8},(_,r)=>flat.slice(r*8,(r+1)*8).map(v=>v||null))}
 
+// Sequence counter — incremented on every push by this client
+// The receiver compares seq to know if this is a NEW state
+let myPushSeq=0;
+
 function stateObj(){
+  myPushSeq++;
   return{
     board:serBoard(),turn,epR,epC,cwK,cwQ,cbK,cbQ,over,
     mlog:JSON.stringify(mlog),
@@ -1271,7 +1276,8 @@ function stateObj(){
     lastFc:hist.length?hist[hist.length-1].fc:-1,
     lastTr:hist.length?hist[hist.length-1].tr:-1,
     lastTc:hist.length?hist[hist.length-1].tc:-1,
-    ts:Date.now()
+    pushedBy:myCol,   // who pushed this state
+    seq:myPushSeq     // monotonic counter from this client
   };
 }
 
@@ -1284,7 +1290,7 @@ function fbPush(){
 async function createRoom(){
   if(!fbOK()){toast('Firebase not configured',4000);return}
   const nick=(document.getElementById('nick').value.trim()||'Player1').slice(0,16);
-  myNick=nick;myCol='w';oppNick='';
+  myNick=nick;myCol='w';oppNick='';myPushSeq=0;lastSeenSeq={w:-1,b:-1};
   const code=genCode();room=code;flipped=false;doReset();
   const{db,ref,set,onDisconnect}=window._fb;
   const rRef=ref(db,'sectorchess/'+code);
@@ -1306,6 +1312,7 @@ async function joinRoom(){
   const data=snap.val();
   if(data.black&&data.black.online){toast('Room is full');return}
   myNick=nick;myCol='b';room=code;oppNick=data.white?.nick||'White';flipped=true;
+  myPushSeq=0;lastSeenSeq={w:-1,b:-1};
   if(data.state)applyState(data.state);
   await update(ref(db,'sectorchess/'+code),{black:{nick,online:true}});
   showRoomInfo(code);subRoom(code);
@@ -1334,6 +1341,7 @@ async function leaveRoom(){
     try{if(myCol==='w')await remove(ref(db,'sectorchess/'+room));else await update(ref(db,'sectorchess/'+room),{black:null})}catch{}
   }
   room=null;myCol=null;oppNick='';flipped=false;
+  myPushSeq=0;lastSeenSeq={w:-1,b:-1};
   document.getElementById('lobby').style.display='flex';
   document.getElementById('room-info').style.display='none';
   document.getElementById('cmsgs').innerHTML='';
@@ -1341,19 +1349,40 @@ async function leaveRoom(){
 }
 function cleanUns(){fbUns.forEach(u=>u&&u());fbUns=[]}
 
+// Track the last seq we received from EACH player to avoid re-processing
+let lastSeenSeq={w:-1,b:-1};
+
 function subRoom(code){
   if(!fbOK())return;
   const{db,ref,onValue}=window._fb;
   const u1=onValue(ref(db,'sectorchess/'+code+'/state'),snap=>{
     if(!snap.exists())return;
     const st=snap.val();
-    if(st.ts&&Date.now()-st.ts<600)return;
-    const prevFr=hist.length?hist[hist.length-1].fr:-2;
+
+    // IGNORE our own pushes (pushedBy === myCol)
+    if(st.pushedBy===myCol)return;
+
+    // IGNORE duplicate/stale updates (seq not newer than last seen)
+    const who=st.pushedBy||'w';
+    const seq=st.seq||0;
+    if(seq>0&&seq<=lastSeenSeq[who])return;
+    lastSeenSeq[who]=seq;
+
+    // Save from/to BEFORE applyState changes turn
+    const oppFrom=[st.lastFr,st.lastFc];
+    const oppTo=[st.lastTr,st.lastTc];
+    const hadMove=st.lastFr>=0&&st.lastTr>=0;
+    const prevHistLen=hist.length;
+
     applyState(st);
-    if(st.lastFr>=0&&myCol!==turn){
-      const same=(prevFr===st.lastFr&&hist.length>0&&hist[hist.length-1].fc===st.lastFc);
-      if(!same)flashOpp(st.lastFr,st.lastFc,st.lastTr,st.lastTc);
+
+    // Flash the opponent's last move (use saved coords, not turn-dependent logic)
+    if(hadMove&&hist.length>prevHistLen){
+      flashOpp(oppFrom[0],oppFrom[1],oppTo[0],oppTo[1]);
+      SFX.move();
     }
+
+    busy=false; // ensure we can interact after opponent moves
     renderBoard();updateUI();renderLog();
   });
   const u2=onValue(ref(db,'sectorchess/'+code+'/black'),snap=>{
@@ -1372,18 +1401,27 @@ function subRoom(code){
 }
 
 function applyState(st){
+  // Deserialize board
   if(st.board)deserBoard(st.board);
+  // Game state
   if(st.turn!==undefined)turn=st.turn;
-  epR=st.epR!==undefined?st.epR:-1;
-  epC=st.epC!==undefined?st.epC:-1;
+  epR=st.epR!==undefined?Number(st.epR):-1;
+  epC=st.epC!==undefined?Number(st.epC):-1;
   if(st.cwK!==undefined){cwK=!!st.cwK;cwQ=!!st.cwQ;cbK=!!st.cbK;cbQ=!!st.cbQ}
   if(st.over!==undefined)over=!!st.over;
-  if(st.mlog)try{mlog=JSON.parse(st.mlog)}catch{}
+  if(st.mlog){try{mlog=JSON.parse(st.mlog)}catch{mlog=[]}}
+  // Record last move in hist so renderBoard shows highlight
   if(st.lastFr>=0&&st.lastTr>=0){
-    const lf=st.lastFr,lfc=st.lastFc,lt=st.lastTr,ltc=st.lastTc;
-    if(!hist.length||hist[hist.length-1].fr!==lf||hist[hist.length-1].fc!==lfc)
-      hist.push({fr:lf,fc:lfc,tr:lt,tc:ltc,piece:'',captured:null,prevEpR:-1,prevEpC:-1,prevCwK:cwK,prevCwQ:cwQ,prevCbK:cbK,prevCbQ:cbQ,castle:null,epCapR:-1,epCapC:-1,promo:null});
+    const lf=Number(st.lastFr),lfc=Number(st.lastFc),lt=Number(st.lastTr),ltc=Number(st.lastTc);
+    const alreadyIn=hist.length&&hist[hist.length-1].fr===lf&&hist[hist.length-1].fc===lfc
+                    &&hist[hist.length-1].tr===lt&&hist[hist.length-1].tc===ltc;
+    if(!alreadyIn)
+      hist.push({fr:lf,fc:lfc,tr:lt,tc:ltc,piece:'',captured:null,
+                 prevEpR:-1,prevEpC:-1,prevCwK:cwK,prevCwQ:cwQ,prevCbK:cbK,prevCbQ:cbQ,
+                 castle:null,epCapR:-1,epCapC:-1,promo:null});
   }
+  // Clear any pending selection
+  selR=selC=-1;legalMoves=[];
 }
 
 function flashOpp(fr,fc,tr,tc){
